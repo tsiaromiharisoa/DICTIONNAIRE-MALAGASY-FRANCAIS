@@ -1,55 +1,69 @@
+from flask import Flask, request, jsonify
 import requests
 from bs4 import BeautifulSoup
 import json
 
-# URL cible
-url = 'https://fr.glosbe.com/mg/fr/tiako%20ianao'
+app = Flask(__name__)
 
-# Requête HTTP pour obtenir le contenu de la page
-response = requests.get(url)
-if response.status_code == 200:
-    # Parser le contenu HTML avec BeautifulSoup
-    soup = BeautifulSoup(response.content, 'html.parser')
+def scrape_definitions(alpha, page):
+    # Construire l'URL
+    url = f"http://dico.malgache.free.fr/franc_malg.php3?alpha={alpha}&first={page}"
     
-    # Dictionnaire pour stocker les résultats
-    results = {
-        "translations": [],
-        "examples": [],
-        "context_translations": []
-    }
+    # Envoyer la requête GET
+    response = requests.get(url)
+    
+    # Vérifier si la requête a réussi
+    if response.status_code == 200:
+        # Analyser le contenu HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Trouver toutes les définitions dans le tableau
+        definitions = []
+        for row in soup.find_all('tr'):
+            # Chaque définition est dans une cellule <td>
+            cells = row.find_all('td')
+            if cells:
+                # Extraire le texte et nettoyer
+                definition = cells[0].get_text(strip=True)
+                definitions.append(definition)
+        
+        # Formater les résultats en JSON
+        return json.dumps(definitions, ensure_ascii=False, indent=4)
+    else:
+        return None
 
-    # Extraire la traduction principale (je t'aime)
-    translation_elem = soup.find('p', {'class': 'text-xs text-gray-600 line-clamp-2', 'id': 'content-summary'})
-    if translation_elem:
-        translation_text = translation_elem.get_text(strip=True)
-        results["translations"].append(translation_text)
+@app.route('/recherche', methods=['GET'])
+def recherche():
+    dictionnaire = request.args.get('dictionnaire', default='A', type=str)
+    page = request.args.get('page', default=0, type=int)
+    
+    # Appel de la fonction de scraping
+    result = scrape_definitions(dictionnaire, page)
+    
+    if result:
+        return jsonify({"definitions": json.loads(result)})
+    else:
+        return jsonify({"error": "Erreur lors de la récupération des données."}), 500
 
-    # Extraire les exemples de phrases
-    examples = soup.select('div.translation__example')
-    if examples:
-        for example in examples:
-            malagasy_elem = example.select_one('p[lang="mg"]')
-            french_elem = example.select_one('p:not([lang="mg"])')
-            
-            malagasy = malagasy_elem.get_text(strip=True) if malagasy_elem else None
-            french = french_elem.get_text(strip=True) if french_elem else None
+@app.route('/recherche/query', methods=['GET'])
+def recherche_query():
+    query = request.args.get('query', type=str)
+    
+    if not query:
+        return jsonify({"error": "Aucune requête fournie."}), 400
 
-            if malagasy and french:
-                results["examples"].append({
-                    "malagasy": malagasy,
-                    "french": french
-                })
+    # Scraping pour récupérer les définitions
+    all_definitions = []
+    for page in range(0, 100, 25):  # Ajustez la plage si nécessaire
+        result = scrape_definitions(query[0], page)  # Utiliser la première lettre pour l'alpha
+        if result:
+            all_definitions.extend(json.loads(result))
+    
+    # Filtrer les définitions en fonction de la requête
+    filtered_definitions = [definition for definition in all_definitions if query in definition]
+    
+    return jsonify({"results": filtered_definitions})
 
-    # Extraire les traductions en contexte
-    context_section = soup.find_all('div', class_='border-gray-300')
-    if context_section:
-        for context in context_section:
-            context_text = context.get_text(strip=True)
-            if context_text:
-                results["context_translations"].append(context_text)
-
-    # Afficher les résultats en JSON
-    print(json.dumps(results, ensure_ascii=False, indent=4))
-else:
-    print(f"Erreur lors de la requête : {response.status_code}")
-      
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+                
